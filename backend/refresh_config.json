@@ -1,8 +1,10 @@
 {
   "enabled_channels": [
     "星视点",
-    "江苏数赢"
+    "江苏数赢",
+    "元创",
+    "弘景"
   ],
-  "schedule_time": "08:00",
-  "cron_expression": "0 08 * * *"
+  "schedule_time": "10:00",
+  "cron_expression": "0 10 * * *"
 }
