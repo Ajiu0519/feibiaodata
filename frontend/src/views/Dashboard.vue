@@ -61,6 +61,10 @@ const getCurrentDate = () => dayjs().format('YYYY-MM-DD')
 const getToday = () => dayjs().format('YYYY-MM-DD')
 const getYesterday = () => dayjs().subtract(1, 'day').format('YYYY-MM-DD')
 
+// 获取当前时间（YYYY-MM-DD HH:mm:ss 格式），用于同一时间段环比
+const getCurrentDateTime = () => dayjs().format('YYYY-MM-DD HH:mm:ss')
+const getYesterdaySameTime = () => dayjs().subtract(1, 'day').format('YYYY-MM-DD HH:mm:ss')
+
 const calcSum = (data, field) => {
   if (!data || !data.data) return 0
   return data.data.reduce((sum, item) => sum + (Number(item[field]) || 0), 0)
@@ -68,12 +72,15 @@ const calcSum = (data, field) => {
 
 const loadKPI = async () => {
   try {
+    const now = getCurrentDateTime()
+    const yesterdaySameTime = getYesterdaySameTime()
     const today = getToday()
     const yesterday = getYesterday()
     
+    // 同一时间段环比：今日从00:00到当前，，昨日从00:00到昨日同一时刻
     const [todayRes, yesterdayRes] = await Promise.all([
-      getDailyData({ start_date: today, end_date: today, limit: 1000 }),
-      getDailyData({ start_date: yesterday, end_date: yesterday, limit: 1000 })
+      getDailyData({ start_date: today, end_time: now, limit: 1000 }),
+      getDailyData({ start_date: yesterday, end_time: yesterdaySameTime, limit: 1000 })
     ])
     
     kpiData.value.todayPay = calcSum(todayRes.data, '支付成功例子数')

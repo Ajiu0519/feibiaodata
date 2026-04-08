@@ -162,11 +162,13 @@ async def get_daily_data(
     channel: str = None,
     start_date: str = None,
     end_date: str = None,
+    start_time: str = None,  # 新增：开始时间，含小时分钟，如 "2026-04-08 00:00:00"
+    end_time: str = None,    # 新增：结束时间，含小时分钟，如 "2026-04-08 13:00:00"
     h5id: str = None,
     limit: int = 100,
     aggregate: bool = False
 ):
-    """获取分日数据,支持聚合模式"""
+    """获取分日数据,支持聚合模式和精确时间过滤"""
     conn = get_db()
     cursor = conn.cursor(pymysql.cursors.DictCursor)
     try:
@@ -188,10 +190,17 @@ async def get_daily_data(
             if channel:
                 query += " AND 渠道 = %s"
                 params.append(channel)
-            if start_date:
+            # 时间范围过滤优先于日期过滤
+            if start_time:
+                query += " AND 领课时间 >= %s"
+                params.append(start_time)
+            elif start_date:
                 query += " AND 领课时间 >= %s"
                 params.append(start_date)
-            if end_date:
+            if end_time:
+                query += " AND 领课时间 <= %s"
+                params.append(end_time)
+            elif end_date:
                 query += " AND 领课时间 <= %s"
                 params.append(end_date)
 
@@ -222,10 +231,17 @@ async def get_daily_data(
         if channel:
             query += " AND 渠道 = %s"
             params.append(channel)
-        if start_date:
+        # 时间范围过滤优先于日期过滤
+        if start_time:
+            query += " AND 领课时间 >= %s"
+            params.append(start_time)
+        elif start_date:
             query += " AND 领课时间 >= %s"
             params.append(start_date)
-        if end_date:
+        if end_time:
+            query += " AND 领课时间 <= %s"
+            params.append(end_time)
+        elif end_date:
             query += " AND 领课时间 <= %s"
             params.append(end_date)
         if h5id:
