@@ -7,9 +7,6 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# 激活虚拟环境
-source venv/bin/activate
-
 # 设置 PYTHONIOENCODING 为 utf-8
 export PYTHONIOENCODING=utf-8
 

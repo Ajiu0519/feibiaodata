@@ -135,7 +135,7 @@ def _parse_script_output(process, task):
 def _run_refresh(task: RefreshTask):
     """在新线程中执行刷新"""
     script_path = os.path.join(os.path.dirname(__file__), 'run_daily.py')
-    venv_python = '/Users/panyijie/Projects/DataDashboard/venv/bin/python3'
+    venv_python = '/usr/bin/python3'
     
     task.add_log("=" * 50)
     task.add_log(f"🚀 数据刷新任务开始")
