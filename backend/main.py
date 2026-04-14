@@ -7,8 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 import os
 
-# 静态文件目录
-STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+# 静态文件目录（可通过环境变量覆盖，测试环境用 static_test）
+STATIC_DIR = os.environ.get('STATIC_DIR') or os.path.join(os.path.dirname(__file__), "static")
 from pydantic import BaseModel
 from database import test_connection
 from summary import generate_summary
@@ -188,8 +188,14 @@ async def get_daily_data(
             params = []
 
             if channel:
-                query += " AND 渠道 = %s"
-                params.append(channel)
+                channels_list = [ch.strip() for ch in channel.split(',')]
+                if len(channels_list) == 1:
+                    query += " AND 渠道 = %s"
+                    params.append(channels_list[0])
+                else:
+                    placeholders = ','.join(['%s'] * len(channels_list))
+                    query += f" AND 渠道 IN ({placeholders})"
+                    params.extend(channels_list)
             # 时间范围过滤优先于日期过滤
             if start_time:
                 query += " AND 领课时间 >= %s"
@@ -229,8 +235,14 @@ async def get_daily_data(
         params = []
 
         if channel:
-            query += " AND 渠道 = %s"
-            params.append(channel)
+            channels_list = [ch.strip() for ch in channel.split(',')]
+            if len(channels_list) == 1:
+                query += " AND 渠道 = %s"
+                params.append(channels_list[0])
+            else:
+                placeholders = ','.join(['%s'] * len(channels_list))
+                query += f" AND 渠道 IN ({placeholders})"
+                params.extend(channels_list)
         # 时间范围过滤优先于日期过滤
         if start_time:
             query += " AND 领课时间 >= %s"
@@ -287,8 +299,14 @@ async def get_daily_detail(
             query += " AND 领课时间 = %s"
             params.append(date)
         if channel:
-            query += " AND 渠道 = %s"
-            params.append(channel)
+            channels_list = [ch.strip() for ch in channel.split(',')]
+            if len(channels_list) == 1:
+                query += " AND 渠道 = %s"
+                params.append(channels_list[0])
+            else:
+                placeholders = ','.join(['%s'] * len(channels_list))
+                query += f" AND 渠道 IN ({placeholders})"
+                params.extend(channels_list)
 
         query += " GROUP BY h5id ORDER BY h5id"
 
@@ -322,8 +340,14 @@ async def get_camp_data(
         params = []
 
         if channel:
-            query += " AND 渠道 = %s"
-            params.append(channel)
+            channels_list = [ch.strip() for ch in channel.split(',')]
+            if len(channels_list) == 1:
+                query += " AND 渠道 = %s"
+                params.append(channels_list[0])
+            else:
+                placeholders = ','.join(['%s'] * len(channels_list))
+                query += f" AND 渠道 IN ({placeholders})"
+                params.extend(channels_list)
         if xunlianying:
             query += " AND 训练营 LIKE %s"
             params.append(f"%{xunlianying}%")
@@ -360,8 +384,14 @@ async def get_camp_by_category(
         params = []
 
         if channel:
-            query += " AND 渠道 = %s"
-            params.append(channel)
+            channels_list = [ch.strip() for ch in channel.split(',')]
+            if len(channels_list) == 1:
+                query += " AND 渠道 = %s"
+                params.append(channels_list[0])
+            else:
+                placeholders = ','.join(['%s'] * len(channels_list))
+                query += f" AND 渠道 IN ({placeholders})"
+                params.extend(channels_list)
 
         cursor.execute(query, params)
         data = cursor.fetchall()
@@ -508,6 +538,7 @@ async def get_camp_by_category(
 async def get_camp_flat(
     category: str = None,  # 太极 / 八段锦 / 空表示全部
     channel: str = None,
+    period: str = None,  # 期次，如 260411
     start_date: str = None,  # YYYY-MM-DD
     end_date: str = None,
     limit: int = 5000,
@@ -516,7 +547,8 @@ async def get_camp_flat(
     sort_by_2: str = None,
     sort_order_2: str = 'desc',
     sort_by_3: str = None,
-    sort_order_3: str = 'desc'
+    sort_order_3: str = 'desc',
+    limit_periods: int = 15  # 每个品类默认返回近15期，0表示不限制
 ):
     """
     获取分期次数据(扁平格式,用于表格展示)
@@ -531,6 +563,9 @@ async def get_camp_flat(
         # SQL层用索引过滤（期次时间）
         conditions = []
         params = []
+        if period:
+            conditions.append("训练营 LIKE %s")
+            params.append(f"%【{period}期】%")
         if start_date:
             conditions.append("期次时间 >= %s")
             params.append(start_date)
@@ -648,6 +683,29 @@ async def get_camp_flat(
         if category:
             result = [r for r in result if r['category'] == category]
 
+        # 按期次过滤：每个品类只返回最新的N期（按期次去重，渠道不计入）
+        if limit_periods > 0:
+            # 第一步：每个品类收集唯一期次（按period去重）
+            category_unique_periods = {}
+            for r in result:
+                cat = r['category']
+                period = r['period']
+                if cat not in category_unique_periods:
+                    category_unique_periods[cat] = {}
+                # 保留排序后该期的第一条记录（按period_date最晚的）
+                if period not in category_unique_periods[cat]:
+                    category_unique_periods[cat][period] = r
+
+            # 第二步：获取每个品类最新的N个唯一期次
+            allowed_periods = set()
+            for cat, periods_dict in category_unique_periods.items():
+                sorted_periods = sorted(periods_dict.values(), key=lambda x: x['period_date'] or '', reverse=True)
+                for item in sorted_periods[:limit_periods]:
+                    allowed_periods.add((item['category'], item['period']))
+
+            # 第三步：过滤结果，只保留属于允许期次的记录
+            result = [r for r in result if (r['category'], r['period']) in allowed_periods]
+
         # 排序逻辑
         def parse_sort_value(item, field):
             """解析排序字段值"""
@@ -713,8 +771,14 @@ async def get_trend_data(
         params = [start_date, end_date]
 
         if channel:
-            query += " AND 渠道 = %s"
-            params.append(channel)
+            channels_list = [ch.strip() for ch in channel.split(',')]
+            if len(channels_list) == 1:
+                query += " AND 渠道 = %s"
+                params.append(channels_list[0])
+            else:
+                placeholders = ','.join(['%s'] * len(channels_list))
+                query += f" AND 渠道 IN ({placeholders})"
+                params.extend(channels_list)
 
         query += " GROUP BY 领课时间, 渠道 ORDER BY 领课时间, 渠道"
 
@@ -762,26 +826,70 @@ async def get_ai_summary(date: str = None):
 class RefreshConfig(BaseModel):
     enabled_channels: list[str]
     schedule_time: str
+    is_one_time: bool = False
 
-def update_cron_job(schedule_time: str) -> bool:
-    """更新 cron 任务"""
+def update_cron_job(schedule_time: str, is_one_time: bool = False) -> bool:
+    """更新 cron 或 at 任务"""
     try:
         import subprocess
-        # 解析时间 (HH:MM)
-        hour, minute = schedule_time.split(':')
-        cron_expr = f"{minute} {hour} * * *"
-        
-        # 使用 shell 命令操作 crontab
-        cmd = f'echo "{cron_expr} /root/DataDashboard/backend/trigger_refresh.sh" | crontab -'
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            print(f"更新cron失败: {result.stderr}")
-            return False
-        
-        return True
+        import os
+
+        # 创建 trigger_refresh.sh 脚本
+        script_path = '/root/DataDashboard/backend/trigger_refresh.sh'
+        script_content = f'''#!/bin/bash
+# 预约刷新任务 - {schedule_time}
+cd /opt/DataDashboard && ./venv/bin/python 抓取数据.py >> /opt/DataDashboard/logs/crawl_$(date +%Y%m%d).log 2>&1
+'''
+        with open(script_path, 'w') as f:
+            f.write(script_content)
+        os.chmod(script_path, 0o755)
+
+        if is_one_time:
+            # 一次性任务，使用 at 命令
+            # 清除现有的 cron 任务
+            subprocess.run('crontab -r', shell=True, capture_output=True)
+
+            # 解析时间 (HH:MM)
+            hour, minute = schedule_time.split(':')
+
+            # 使用 at 命令安排一次性执行
+            at_time = f"{hour}:{minute}"
+            cmd = f'at -m {at_time} -f {script_path}'
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+
+            if result.returncode != 0:
+                print(f"创建一次性任务失败: {result.stderr}")
+                return False
+
+            print(f"一次性任务已安排: {at_time}")
+            return True
+        else:
+            # 定期任务，使用 cron
+            # 解析时间，支持逗号分隔的多个时间
+            times = [t.strip() for t in schedule_time.split(',')]
+            cron_parts = []
+            for time_str in times:
+                if ':' in time_str:
+                    h, m = time_str.split(':')
+                    cron_parts.append(f"{m} {h}")
+
+            if not cron_parts:
+                print(f"无效的时间格式: {schedule_time}")
+                return False
+
+            cron_expr = f"{','.join(cron_parts)} * * *"
+
+            # 使用 shell 命令操作 crontab
+            cmd = f'echo "{cron_expr} {script_path}" | crontab -'
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+
+            if result.returncode != 0:
+                print(f"更新cron失败: {result.stderr}")
+                return False
+
+            return True
     except Exception as e:
-        print(f"更新cron失败: {e}")
+        print(f"更新任务失败: {e}")
         return False
 
 @app.get("/api/refresh/config")
@@ -799,11 +907,14 @@ async def save_refresh_config(cfg: RefreshConfig):
     """保存刷新配置"""
     try:
         update_config(cfg.enabled_channels, cfg.schedule_time)
-        
-        # 更新 cron 任务
-        update_cron_job(cfg.schedule_time)
-        
-        return {"status": "success", "message": f"配置已保存，定时任务已更新为 {cfg.schedule_time}"}
+
+        # 更新 cron 或 at 任务
+        update_cron_job(cfg.schedule_time, cfg.is_one_time)
+
+        if cfg.is_one_time:
+            return {"status": "success", "message": f"一次性预约已设置: {cfg.schedule_time}"}
+        else:
+            return {"status": "success", "message": f"配置已保存，定时任务已更新为 {cfg.schedule_time}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

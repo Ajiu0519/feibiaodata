@@ -9,6 +9,7 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'refresh_config.json')
 ALL_CHANNELS = {
     '星视点': '538FD95F068B9CB986307F81652DD931xqd',
     '江苏数赢': '4AAFBA8646E5A10646070B7626DF87BBSY',
+    '中正运动': '154b8c8303e5b569c9990332d2e60b62ZZYD',
     '元创': '1c5f823b699d6597c20c1f192b16d2e0YC',
     '弘景': 'f4b325226ee385f8dc2216744e8013f0HJ',
 }

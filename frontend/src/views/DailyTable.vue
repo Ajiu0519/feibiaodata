@@ -43,8 +43,8 @@ const cachedData = ref([])
 
 // 筛选条件
 const filters = ref({
-  channel: '',
-  dateRange: []
+  channel: [],
+  dateRange: [dayjs().subtract(6, 'day').format('YYYY-MM-DD'), dayjs().format('YYYY-MM-DD')]
 })
 
 // 分页
@@ -61,10 +61,46 @@ const expandedKeys = ref(new Set())
 // H5ID 明细缓存
 const detailCache = ref({})
 
+// 获取排序后的明细数据
+const getSortedDetailData = (key) => {
+  const data = detailCache.value[key] || []
+  // 默认按有效例子数降序排序
+  return [...data].sort((a, b) => {
+    const aVal = parseInt(a['有效例子数']) || 0
+    const bVal = parseInt(b['有效例子数']) || 0
+    return bVal - aVal
+  })
+}
+
+// 快速日期选择
+const quickDateOptions = [
+  { label: '今日', value: 'today' },
+  { label: '昨日', value: 'yesterday' },
+  { label: '近7天', value: '7' },
+  { label: '近14天', value: '14' },
+  { label: '近30天', value: '30' }
+]
+const selectedQuickDate = ref('7')
+
+const setQuickDateRange = (type) => {
+  selectedQuickDate.value = type
+  const today = dayjs()
+
+  if (type === 'today') {
+    filters.value.dateRange = [today.format('YYYY-MM-DD'), today.format('YYYY-MM-DD')]
+  } else if (type === 'yesterday') {
+    const yesterday = today.subtract(1, 'day')
+    filters.value.dateRange = [yesterday.format('YYYY-MM-DD'), yesterday.format('YYYY-MM-DD')]
+  } else {
+    const days = parseInt(type)
+    filters.value.dateRange = [today.subtract(days - 1, 'day').format('YYYY-MM-DD'), today.format('YYYY-MM-DD')]
+  }
+}
+
 const loadChannels = async () => {
   try {
-    const res = await getChannels()
-    channels.value = res.data.channels.filter(c => c) || []
+    // 使用与后端配置一致的渠道列表
+    channels.value = ['星视点', '江苏数赢', '中正运动', '元创', '弘景']
   } catch (error) {
     console.error('加载渠道失败:', error)
   }
@@ -72,7 +108,7 @@ const loadChannels = async () => {
 
 const buildCacheKey = () => {
   const dateRange = filters.value.dateRange || []
-  return `${filters.value.channel || 'all'}|${dateRange[0] || ''}|${dateRange[1] || ''}`
+  return `${filters.value.channel?.join(',') || 'all'}|${dateRange[0] || ''}|${dateRange[1] || ''}`
 }
 
 const loadData = async (forceRefresh = false) => {
@@ -95,8 +131,8 @@ const loadData = async (forceRefresh = false) => {
       aggregate: true
     }
     
-    if (filters.value.channel) {
-      params.channel = filters.value.channel
+    if (filters.value.channel && filters.value.channel.length > 0) {
+      params.channel = filters.value.channel.join(',')
     }
     
     if (filters.value.dateRange && filters.value.dateRange.length === 2) {
@@ -165,7 +201,8 @@ const handleSearch = () => {
 }
 
 const handleReset = () => {
-  filters.value = { channel: '', dateRange: [] }
+  selectedQuickDate.value = '7'
+  filters.value = { channel: [], dateRange: [dayjs().subtract(6, 'day').format('YYYY-MM-DD'), dayjs().format('YYYY-MM-DD')] }
   pagination.value.current = 1
   expandedKeys.value = new Set()
   detailCache.value = {}
@@ -211,7 +248,7 @@ onMounted(async () => {
       <!-- 筛选条件 -->
       <el-form :inline="true" class="filters">
         <el-form-item label="渠道">
-          <el-select v-model="filters.channel" placeholder="全部渠道" clearable style="width: 150px">
+          <el-select v-model="filters.channel" placeholder="全部渠道" multiple clearable style="width: 200px">
             <el-option
               v-for="ch in channels"
               :key="ch"
@@ -220,7 +257,7 @@ onMounted(async () => {
             />
           </el-select>
         </el-form-item>
-        
+
         <el-form-item label="日期范围">
           <el-date-picker
             v-model="filters.dateRange"
@@ -231,13 +268,25 @@ onMounted(async () => {
             value-format="YYYY-MM-DD"
             style="width: 240px"
           />
+          <div style="margin-top: 8px">
+            <el-radio-group v-model="selectedQuickDate" size="small" @change="setQuickDateRange">
+              <el-radio-button v-for="opt in quickDateOptions" :key="opt.value" :value="opt.value">
+                {{ opt.label }}
+              </el-radio-button>
+            </el-radio-group>
+          </div>
         </el-form-item>
-        
+
         <el-form-item>
           <el-button type="primary" @click="handleSearch">查询</el-button>
           <el-button @click="handleReset">重置</el-button>
         </el-form-item>
       </el-form>
+
+      <!-- 当前日期范围显示 -->
+      <div v-if="filters.dateRange && filters.dateRange.length === 2" style="margin-bottom: 12px; color: #606266; font-size: 14px">
+        当前筛选：{{ filters.dateRange[0] }} 至 {{ filters.dateRange[1] }} (共 {{ dayjs(filters.dateRange[1]).diff(dayjs(filters.dateRange[0]), 'day') + 1 }} 天)
+      </div>
       
       <!-- 每页条数 -->
       <el-row style="margin-bottom: 12px" justify="end">
@@ -267,17 +316,17 @@ onMounted(async () => {
               <el-tag type="info" style="margin-bottom: 12px">
                 💡 {{ outerRow.channel }} - {{ outerRow.date }} H5ID明细 (只显示支付>0)
               </el-tag>
-              <el-table 
-                :data="detailCache[`${outerRow.date}|${outerRow.channel}`]" 
+              <el-table
+                :data="getSortedDetailData(`${outerRow.date}|${outerRow.channel}`)"
                 size="small"
                 border
               >
-                <el-table-column prop="h5id" label="H5ID" width="120" />
-                <el-table-column prop="支付成功例子数" label="支付成功数" width="120" />
-                <el-table-column prop="有效例子数" label="有效例子数" width="120" />
-                <el-table-column prop="临时例子数" label="临时例子数" width="100" />
-                <el-table-column prop="加微例子数" label="加微例子数" width="100" />
-                <el-table-column prop="加微率" label="加微率" width="100">
+                <el-table-column prop="h5id" label="H5ID" width="120" sortable />
+                <el-table-column prop="支付成功例子数" label="支付成功数" width="120" sortable />
+                <el-table-column prop="有效例子数" label="有效例子数" width="120" sortable />
+                <el-table-column prop="临时例子数" label="临时例子数" width="100" sortable />
+                <el-table-column prop="加微例子数" label="加微例子数" width="100" sortable />
+                <el-table-column prop="加微率" label="加微率" width="100" sortable>
                   <template #default="{ row: detailRow }">
                     <el-tag :type="getRateColor(detailRow['加微率'])" size="small">
                       {{ detailRow['加微率'] }}

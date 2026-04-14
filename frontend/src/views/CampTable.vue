@@ -6,6 +6,7 @@ import dayjs from 'dayjs'
 
 const loading = ref(false)
 const channels = ref([])
+const periods = ref([])
 const tableData = ref([])
 const total = ref(0)
 
@@ -13,6 +14,7 @@ const total = ref(0)
 const filters = ref({
   categories: ['太极', '八段锦'],
   channel: '',
+  period: '',
   dateRange: []
 })
 
@@ -93,6 +95,9 @@ const loadChannels = async () => {
     // 提取唯一渠道并排序
     const uniqueChannels = [...new Set(allData.map(item => item.channel).filter(c => c))]
     channels.value = uniqueChannels.sort()
+    // 提取唯一期次并排序
+    const uniquePeriods = [...new Set(allData.map(item => item.period).filter(p => p))]
+    periods.value = uniquePeriods.sort().reverse()
   } catch (error) {
     console.error('加载渠道失败:', error)
   }
@@ -102,21 +107,21 @@ const loadData = async () => {
   loading.value = true
   try {
     const params = {}
-    
+
     if (filters.value.channel) {
       params.channel = filters.value.channel
     }
-    
-    // 日期范围（近12天）
+
+    if (filters.value.period) {
+      params.period = filters.value.period
+    }
+
+    // 日期范围过滤（只有选择了日期范围时才生效）
     if (filters.value.dateRange && filters.value.dateRange.length === 2) {
       params.start_date = filters.value.dateRange[0]
       params.end_date = filters.value.dateRange[1]
-    } else {
-      // 默认近12天
-      params.end_date = dayjs().format('YYYY-MM-DD')
-      params.start_date = dayjs().subtract(12, 'day').format('YYYY-MM-DD')
     }
-    
+
     // 排序参数（最多支持3个排序字段）
     if (sortStack.value.length > 0) {
       params.sort_by = sortFieldMap[sortStack.value[0].field] || sortStack.value[0].field
@@ -130,18 +135,18 @@ const loadData = async () => {
       params.sort_by_3 = sortFieldMap[sortStack.value[2].field] || sortStack.value[2].field
       params.sort_order_3 = sortStack.value[2].order
     }
-    
+
     const res = await getCampFlat(params)
-    
+
     // 前端再过滤品类
     let data = res.data.data || []
     if (filters.value.categories.length > 0 && filters.value.categories.length < 2) {
       data = data.filter(item => item.category === filters.value.categories[0])
     }
-    
+
     tableData.value = data
     total.value = data.length
-    
+
     loading.value = false
   } catch (error) {
     console.error('加载数据失败:', error)
@@ -158,6 +163,7 @@ const handleReset = () => {
   filters.value = {
     categories: ['太极', '八段锦'],
     channel: '',
+    period: '',
     dateRange: []
   }
   sortStack.value = []
@@ -227,8 +233,8 @@ onMounted(async () => {
       <el-form :inline="true" class="filters">
         <el-form-item label="品类">
           <el-checkbox-group v-model="filters.categories" @change="handleSearch">
-            <el-checkbox label="太极" />
-            <el-checkbox label="八段锦" />
+            <el-checkbox value="太极" />
+            <el-checkbox value="八段锦" />
           </el-checkbox-group>
         </el-form-item>
         
@@ -242,7 +248,18 @@ onMounted(async () => {
             />
           </el-select>
         </el-form-item>
-        
+
+        <el-form-item label="期次">
+          <el-select v-model="filters.period" placeholder="全部期次" clearable style="width: 150px" @change="handleSearch">
+            <el-option
+              v-for="p in periods"
+              :key="p"
+              :label="`${p}期`"
+              :value="p"
+            />
+          </el-select>
+        </el-form-item>
+
         <el-form-item label="期次时间">
           <el-date-picker
             v-model="filters.dateRange"

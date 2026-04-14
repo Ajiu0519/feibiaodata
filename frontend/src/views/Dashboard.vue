@@ -39,6 +39,12 @@ const refreshConfig = ref({
 })
 const configLoading = ref(false)
 
+// 预约刷新时间
+const schedule10 = ref(false)
+const schedule17 = ref(false)
+const scheduleCustom = ref(false)
+const customTime = ref('')
+
 // 刷新日志
 const refreshStatus = ref({ is_running: false })
 const refreshLogs = ref([])
@@ -115,6 +121,10 @@ const loadRefreshConfig = async () => {
     const res = await getRefreshConfig()
     refreshConfig.value = res.data
     selectedChannels.value = [...res.data.enabled_channels]
+    // 解析预约时间
+    const times = res.data.schedule_time ? res.data.schedule_time.split(',') : []
+    schedule10.value = times.includes('10:00')
+    schedule17.value = times.includes('17:00')
   } catch (error) {
     console.error('获取刷新配置失败:', error)
   }
@@ -170,6 +180,50 @@ const saveConfig = async () => {
       schedule_time: refreshConfig.value.schedule_time
     })
     ElMessage.success('配置已保存')
+  } catch (error) {
+    ElMessage.error('保存失败')
+  } finally {
+    configLoading.value = false
+  }
+}
+
+const saveScheduleTime = async () => {
+  const times = []
+  if (schedule10.value) times.push('10:00')
+  if (schedule17.value) times.push('17:00')
+
+  if (times.length === 0 && !scheduleCustom.value) {
+    ElMessage.warning('请至少选择一个预约时间')
+    return
+  }
+
+  if (scheduleCustom.value && !customTime.value) {
+    ElMessage.warning('请选择自定义时间')
+    return
+  }
+
+  configLoading.value = true
+  try {
+    let schedule_time = times.join(',')
+    let isOneTime = false
+
+    if (scheduleCustom.value && customTime.value) {
+      schedule_time = customTime.value
+      isOneTime = true
+    }
+
+    await saveRefreshConfig({
+      enabled_channels: refreshConfig.value.enabled_channels,
+      schedule_time: schedule_time,
+      is_one_time: isOneTime
+    })
+    refreshConfig.value.schedule_time = schedule_time
+
+    if (isOneTime) {
+      ElMessage.success(`已预约一次性刷新，时间: ${customTime.value}`)
+    } else {
+      ElMessage.success('预约时间已保存')
+    }
   } catch (error) {
     ElMessage.error('保存失败')
   } finally {
@@ -360,19 +414,7 @@ onUnmounted(() => {
   <div class="dashboard">
     <!-- KPI 卡片 -->
     <el-row :gutter="20" class="kpi-row">
-      <el-col :span="6">
-        <el-card class="kpi-card" shadow="hover" @click="openTrendDialog('pay', '支付成功数')">
-          <el-statistic :title="getCurrentDate() + ' 支付成功数'" :value="kpiData.todayPay">
-            <template #prefix><span class="kpi-icon">💰</span></template>
-          </el-statistic>
-          <div class="kpi-change" :class="getChange(kpiData.todayPay, kpiData.yesterdayPay) >= 0 ? 'up' : 'down'">
-            环比 {{ getChange(kpiData.todayPay, kpiData.yesterdayPay) }}%
-          </div>
-          <div class="kpi-hint">点击查看7天趋势</div>
-        </el-card>
-      </el-col>
-      
-      <el-col :span="6">
+      <el-col :span="12">
         <el-card class="kpi-card" shadow="hover" @click="openTrendDialog('effective', '有效例子数')">
           <el-statistic :title="getCurrentDate() + ' 有效例子数'" :value="kpiData.todayEffective">
             <template #prefix><span class="kpi-icon">📋</span></template>
@@ -383,8 +425,8 @@ onUnmounted(() => {
           <div class="kpi-hint">点击查看7天趋势</div>
         </el-card>
       </el-col>
-      
-      <el-col :span="6">
+
+      <el-col :span="12">
         <el-card class="kpi-card" shadow="hover" @click="openTrendDialog('addwx', '加微例子数')">
           <el-statistic :title="getCurrentDate() + ' 加微例子数'" :value="kpiData.todayAddWx">
             <template #prefix><span class="kpi-icon">➕</span></template>
@@ -393,15 +435,6 @@ onUnmounted(() => {
             环比 {{ getChange(kpiData.todayAddWx, kpiData.yesterdayAddWx) }}%
           </div>
           <div class="kpi-hint">点击查看7天趋势</div>
-        </el-card>
-      </el-col>
-      
-      <el-col :span="6">
-        <el-card class="kpi-card" shadow="hover">
-          <el-statistic title="活跃渠道数" :value="refreshConfig.enabled_channels.length">
-            <template #prefix><span class="kpi-icon">📡</span></template>
-          </el-statistic>
-          <div class="kpi-sub">已配置渠道</div>
         </el-card>
       </el-col>
     </el-row>
@@ -415,7 +448,7 @@ onUnmounted(() => {
       <!-- 趋势筛选工具栏 -->
       <div style="margin-bottom: 16px; display: flex; gap: 12px; align-items: center;">
         <el-select v-model="trendChannelFilter" placeholder="全部渠道" clearable style="width: 150px" @change="loadTrend7Data">
-          <el-option v-for="ch in refreshConfig.enabled_channels" :key="ch" :label="ch" :value="ch" />
+          <el-option v-for="ch in refreshConfig.all_channels" :key="ch" :label="ch" :value="ch" />
         </el-select>
         <el-select v-model="trendDaysFilter" style="width: 120px" @change="loadTrend7Data">
           <el-option :value="7" label="近7天" />
@@ -455,19 +488,17 @@ onUnmounted(() => {
       
       <el-row :gutter="20">
         <el-col :span="12">
-          <h4>已配置的渠道</h4>
-          <div v-if="refreshConfig.enabled_channels.length > 0" style="margin-bottom: 12px">
-            <el-tag 
-              v-for="ch in refreshConfig.enabled_channels" 
-              :key="ch" 
-              type="success"
+          <h4>渠道状态</h4>
+          <div style="margin-bottom: 12px">
+            <el-tag
+              v-for="ch in refreshConfig.all_channels"
+              :key="ch"
+              :type="refreshConfig.enabled_channels.includes(ch) ? 'success' : 'info'"
+              :disable-transitions="true"
               style="margin-right: 8px; margin-bottom: 8px"
             >
               {{ ch }}
             </el-tag>
-          </div>
-          <div v-else style="color: #909399; margin-bottom: 12px">
-            暂未配置渠道
           </div>
           <el-button type="primary" @click="openChannelDialog">
             📡 选择渠道并刷新
@@ -475,18 +506,24 @@ onUnmounted(() => {
         </el-col>
         
         <el-col :span="12">
-          <h4>每日自动刷新时间</h4>
-          <el-time-picker 
-            v-model="refreshConfig.schedule_time"
-            format="HH:mm"
-            value-format="HH:mm"
-            placeholder="选择时间"
-            style="width: 100%"
-          />
+          <h4>预约刷新时间</h4>
+          <div style="margin-bottom: 12px">
+            <el-checkbox v-model="schedule10" label="10:00" style="margin-right: 16px" />
+            <el-checkbox v-model="schedule17" label="17:00" style="margin-right: 16px" />
+            <el-checkbox v-model="scheduleCustom" label="自定义" />
+            <el-time-picker
+              v-if="scheduleCustom"
+              v-model="customTime"
+              format="HH:mm"
+              value-format="HH:mm"
+              placeholder="选择时间"
+              style="margin-left: 8px; width: 100px"
+            />
+          </div>
           <p style="color: #909399; font-size: 12px; margin-top: 8px">
-            当前设置: 每天 {{ refreshConfig.schedule_time }} 自动刷新
+            当前设置: 每天 10:00 和 17:00 自动刷新
           </p>
-          <el-button type="success" @click="saveConfig" :loading="configLoading" style="margin-top: 12px">
+          <el-button type="success" @click="saveScheduleTime" :loading="configLoading" style="margin-top: 12px">
             💾 保存定时设置
           </el-button>
         </el-col>

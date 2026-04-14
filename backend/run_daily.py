@@ -27,6 +27,31 @@ engine = create_engine('mysql+pymysql://root_remote:0519mmwan%24%26PYJ@124.222.1
 
 current_token = None
 
+def parse_xunlianying(xunlianying):
+    """从训练营名称中解析国内/海外标识、期次日期，并去掉_国内后缀"""
+    region = '国内'
+    clean_name = xunlianying
+
+    if xunlianying and '_国内' in xunlianying:
+        region = '国内'
+        clean_name = xunlianying.replace('_国内', '')
+    elif xunlianying and '_海外' in xunlianying:
+        region = '海外'
+        clean_name = xunlianying.replace('_海外', '')
+
+    # 解析期次日期，例如 【260411期】 -> 2026-04-11
+    period_date = None
+    import re
+    match = re.search(r'【(\d{6})期】', clean_name)
+    if match:
+        period_str = match.group(1)  # e.g., "260411"
+        year = int('20' + period_str[:2])  # 2026
+        month = int(period_str[2:4])  # 04
+        day = int(period_str[4:6])  # 11
+        period_date = f'{year}-{month:02d}-{day:02d}'
+
+    return region, clean_name, period_date
+
 def connect_to_mysql():
     try:
         connection = pymysql.connect(
@@ -47,8 +72,14 @@ def _quote(col):
 
 def _normalize_key_value(val):
     """标准化键值，用于查重比较"""
+    # 确保返回的是可哈希的标量值
+    if val is None:
+        return None
     if hasattr(val, 'strftime'):  # datetime object
         return val.strftime('%Y-%m-%d')
+    # 如果是 pandas Series 或其他非标量，转为字符串
+    if not isinstance(val, (str, int, float, bool)):
+        return str(val)
     return val
 
 def insert_data_to_mysql(data, table_name, key_columns, columns):
@@ -59,7 +90,11 @@ def insert_data_to_mysql(data, table_name, key_columns, columns):
     cols_sql = ', '.join(_quote(c) for c in key_columns + columns)
     cursor.execute(f"SELECT {cols_sql} FROM `{table_name}`")
     for row in cursor.fetchall():
-        key_tuple = tuple(_normalize_key_value(row[i]) for i in range(len(key_columns)))
+        try:
+            key_tuple = tuple(_normalize_key_value(row[i]) for i in range(len(key_columns)))
+        except Exception as e:
+            print(f"加载 existing_data 时构建 key_tuple 异常: row={row}, error={e}")
+            continue
         existing_data[key_tuple] = row[len(key_columns):]
 
     new_data = []
@@ -68,7 +103,11 @@ def insert_data_to_mysql(data, table_name, key_columns, columns):
     start_time = time.time()
 
     for index, row in data.iterrows():
-        key_tuple = tuple(_normalize_key_value(row[col]) for col in key_columns)
+        try:
+            key_tuple = tuple(_normalize_key_value(row[col]) for col in key_columns)
+        except Exception as e:
+            print(f"构建 key_tuple 异常: row={row.to_dict() if hasattr(row, 'to_dict') else row}, error={e}")
+            raise
 
         if key_tuple in existing_data:
             existing_row = list(existing_data[key_tuple])
@@ -115,7 +154,7 @@ def get_day_data_by_token(token):
     channel_name = tokens.loc[tokens['token'] == token, 'channel_name']
     today = datetime.now().date()
     start_date = today - timedelta(days=2)
-    
+
     for date in pd.date_range(start_date, today):
         date_str = date.strftime('%Y-%m-%d')
         url = f"https://api-h5.tangdou.com/course/board/export?token={token}&date={date_str}&dump_type=day&export=N"
@@ -140,6 +179,68 @@ def get_day_data_by_token(token):
                     key_columns = ['领课时间', 'h5id']
                     columns = ['支付成功例子数', '有效例子数', '临时例子数', '加微例子数', '加微率', '渠道']
                     insert_data_to_mysql(total_data, 'total_day', key_columns, columns)
+
+                # 处理 detail 数据，更新 data_day 表和 xunlianying_id 表
+                if 'detail' in data and data['detail']:
+                    data_detail = pd.DataFrame(data['detail'])
+                    # 解析 linke_time 中的日期
+                    data_detail['linke_time'] = data_detail['linke_time'].apply(lambda x: x['date']).str.split('.').str[0]
+                    key_columns = ['user_id', 'linke_time']
+                    columns = ['user_name', 'xunlianying', 'wx_relation', 'member_status', 'h5id', 'xe_id']
+                    insert_data_to_mysql(data_detail, 'data_day', key_columns, columns)
+
+                    # 更新 xunlianying_id 表：自动发现新训练营
+                    print(f"发现 {len(data_detail['xunlianying'].unique())} 个训练营，开始更新 xunlianying_id 表...")
+                    conn_xe = connect_to_mysql()
+                    cur_xe = conn_xe.cursor()
+                    try:
+                        cur_xe.execute("SELECT COALESCE(MAX(`NO.`), 0) FROM xunlianying_id")
+                        max_no = cur_xe.fetchone()[0]
+                        cur_xe.execute("SELECT xunlianying, `NO.` FROM xunlianying_id")
+                        existing_xe = {row[0]: row[1] for row in cur_xe.fetchall()}
+                        print(f"当前 xunlianying_id 表有 {len(existing_xe)} 条记录，最大 NO. = {max_no}")
+                    except Exception as e:
+                        print(f"读取 xunlianying_id 表异常: {e}")
+                        max_no = 0
+                        existing_xe = {}
+                    cur_xe.close()
+                    conn_xe.close()
+
+                    # 构建新训练营数据
+                    new_xunlianying = data_detail[['xunlianying', 'xe_id']].drop_duplicates()
+                    new_xunlianying = new_xunlianying.dropna(subset=['xunlianying', 'xe_id'])
+
+                    # 解析国内/海外标识和训练营名称
+                    new_xunlianying['region'] = new_xunlianying['xunlianying'].apply(lambda x: parse_xunlianying(x)[0])
+                    new_xunlianying['xunlianying_clean'] = new_xunlianying['xunlianying'].apply(lambda x: parse_xunlianying(x)[1])
+                    print(f"本次发现 {len(new_xunlianying)} 个训练营，其中 {len(new_xunlianying[new_xunlianying['region'] == '国内'])} 个国内，{len(new_xunlianying[new_xunlianying['region'] == '海外'])} 个海外")
+
+                    # 新增的训练营在 NO. 最大值基础上 +1 递增；已存在的保留原 NO.
+                    next_no = max_no + 1
+                    def assign_no(xunlianying):
+                        nonlocal next_no
+                        try:
+                            # 确保输入是字符串
+                            if not isinstance(xunlianying, str):
+                                xunlianying = str(xunlianying)
+                            region, clean_name, period_date = parse_xunlianying(xunlianying)
+                            # 确保 clean_name 是字符串
+                            if not isinstance(clean_name, str):
+                                clean_name = str(clean_name)
+                            if clean_name in existing_xe:
+                                return existing_xe[clean_name]
+                            no = next_no
+                            next_no += 1
+                            return no
+                        except Exception as e:
+                            print(f"assign_no 异常 xunlianying={xunlianying}, type={type(xunlianying)}, error={e}")
+                            return next_no
+                    new_xunlianying['NO.'] = new_xunlianying['xunlianying'].map(assign_no)
+                    new_xunlianying = new_xunlianying.rename(columns={'xe_id': 'xe_id', 'NO.': 'NO.', 'xunlianying_clean': 'xunlianying'})
+
+                    key_columns_xe = ['xunlianying', 'xe_id']
+                    columns_xe = ['NO.', 'region']
+                    insert_data_to_mysql(new_xunlianying, 'xunlianying_id', key_columns_xe, columns_xe)
                 break
             else:
                 print(f"获取 {date_str} 数据失败，重试中... ({retries + 1}/{max_retries})")
@@ -155,9 +256,11 @@ def get_camp_data_by_token(token):
     channel_name = tokens.loc[tokens['token'] == token, 'channel_name']
     xunlianying_id_sql = pd.read_sql('xunlianying_id', con=engine)
     xunlianying_id_sql_sorted = xunlianying_id_sql.sort_values(by='No.', ascending=False)
-    
+
     for id in xunlianying_id_sql_sorted['xe_id'].head(15):
         xunlianying = xunlianying_id_sql[xunlianying_id_sql['xe_id'] == id]['xunlianying'].iloc[0]
+        # 解析 region 和期次时间
+        region, clean_name, period_date = parse_xunlianying(xunlianying)
         url = f"https://api-h5.tangdou.com/course/board/export?token={token}&xe_id={id}&dump_type=camp&export=N&show_order_quantity=Y"
 
         max_retries = 5
@@ -171,7 +274,9 @@ def get_camp_data_by_token(token):
                     if 'total' in data and data['total']:
                         total_data = pd.DataFrame([{
                             '渠道': channel_name.iloc[0],
-                            '训练营': xunlianying,
+                            '训练营': clean_name,
+                            'region': region,
+                            '期次时间': period_date,
                             'h5id': item['h5id'],
                             '支付成功例子数': item['payNum'],
                             '有效例子数': item['effectiveNum'],
@@ -192,7 +297,7 @@ def get_camp_data_by_token(token):
                         key_columns = ['训练营', 'h5id']
                         columns = ['支付成功例子数', '有效例子数', '填写问卷数', '填写问卷率', '单向好友数',
                                    '导学课到课数', '导学课到课率', '导学课完课数', '导学课完课率', 'D1到课数', 'D1到课率', 'D1完课数', 'D1完课率',
-                                   '正价课转化数', '正价课转化率', '渠道']
+                                   '正价课转化数', '正价课转化率', '渠道', 'region', '期次时间']
                         insert_data_to_mysql(total_data, 'total_camp', key_columns, columns)
                     break
                 else:
